@@ -13,7 +13,7 @@ import json
 
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "gemma:2b"
+MODEL = "qwen2.5:1.5b"
 
 PROMPT_TEMPLATE = """You are an AI surveillance assistant. Based on the following scene data, write exactly ONE concise sentence describing what is happening.
 
