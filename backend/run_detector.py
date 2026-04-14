@@ -447,11 +447,7 @@ def main():
         print("Ollama connected.")
 
     # Camera setup
-    CAMERA_RGB = 1
-    CAMERA_IR = 0
-    current_camera = CAMERA_RGB
-
-    cap = cv2.VideoCapture(current_camera)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         print("ERROR: Could not open webcam.")
         return
@@ -467,7 +463,6 @@ def main():
     SUMMARY_INTERVAL = 5
     generating = False
     frame_count = 0
-    last_cam_switch = time.time()
 
     # Cached results (to avoid running expensive models every frame)
     cached_face_names = {}      # obj_id -> name
@@ -562,26 +557,6 @@ def main():
         frame_count += 1
         now = time.time()
 
-        # ── AUTO NIGHT VISION ──
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        brightness = np.mean(gray)
-
-        if (now - last_cam_switch) > 5.0:
-            if current_camera == CAMERA_RGB and brightness < 20:
-                print(f"[NV] Low light ({brightness:.0f}). Switching to IR.")
-                cap.release()
-                cap = cv2.VideoCapture(CAMERA_IR)
-                current_camera = CAMERA_IR
-                last_cam_switch = now
-                continue
-            elif current_camera == CAMERA_IR and brightness > 120:
-                print(f"[NV] Bright ({brightness:.0f}). Switching to RGB.")
-                cap.release()
-                cap = cv2.VideoCapture(CAMERA_RGB)
-                current_camera = CAMERA_RGB
-                last_cam_switch = now
-                continue
-
         # ── YOLO DETECTION (every frame) ──
         annotated_frame, counts, raw_result = detector.process_frame(frame)
 
@@ -656,8 +631,7 @@ def main():
             t.start()
 
         # ── FINAL COMPOSITE ──
-        is_night = (current_camera == CAMERA_IR)
-        annotated_frame = draw_scene_overlay(annotated_frame, scene, current_summary, is_night)
+        annotated_frame = draw_scene_overlay(annotated_frame, scene, current_summary)
 
         cv2.imshow("AI Sentinel Lite", annotated_frame)
 
