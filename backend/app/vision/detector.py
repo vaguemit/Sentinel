@@ -6,7 +6,7 @@ from ultralytics import YOLO
 warnings.filterwarnings("ignore")
 
 class YoloDetector:
-    def __init__(self, model_path="yolov8s.pt", conf=0.4):
+    def __init__(self, model_path="yolov8s.pt", conf=0.55):
         """
         Initialize the YOLOv8s model on GPU.
         yolov8s (small) is significantly more accurate than nano
