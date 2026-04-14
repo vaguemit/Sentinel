@@ -340,36 +340,47 @@ def draw_radar(frame, tracked_objects, radar_size=180):
 
 def draw_tracker_labels(frame, tracked_objects, face_names, actions_map):
     """
-    Draw persistent Target IDs, names, speed, and actions above each person.
+    Draw a single compact label above each person with a dark background pill.
+    Format: "Name (T1) [moving] Standing"
     """
     for obj_id, obj in tracked_objects.items():
         x1, y1, x2, y2 = obj.bbox
         name = face_names.get(obj_id, "")
         action_list = actions_map.get(obj_id, [])
 
-        # Build label
-        label = f"Target {obj_id}"
+        # Build one compact label
+        parts = []
         if name:
-            label = f"{name} (T{obj_id})"
+            parts.append(f"{name} (T{obj_id})")
+        else:
+            parts.append(f"T{obj_id}")
 
-        # Speed indicator
-        speed_label = ""
         if obj.speed > 25:
-            speed_label = " [FAST]"
+            parts.append("FAST")
         elif obj.speed > 8:
-            speed_label = " [moving]"
+            parts.append("moving")
 
-        # Action label
-        action_str = ", ".join(action_list) if action_list else ""
+        if action_list:
+            parts.append(action_list[0])  # Only show primary action
 
-        # Draw target ID + name
-        cv2.putText(frame, label + speed_label, (x1, max(y1 - 10, 20)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        label = " | ".join(parts)
 
-        # Draw action label in red/orange
-        if action_str:
-            cv2.putText(frame, f"[ {action_str} ]", (x1, max(y1 - 35, 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 140, 255), 2)
+        # Calculate label size for background pill
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.5
+        thickness = 1
+        (tw, th), baseline = cv2.getTextSize(label, font, scale, thickness)
+
+        # Position above the bounding box
+        lx = x1
+        ly = max(y1 - 8, th + 4)
+
+        # Dark background pill
+        cv2.rectangle(frame, (lx - 2, ly - th - 4), (lx + tw + 4, ly + 2), (20, 20, 20), -1)
+
+        # Text color: green for known, yellow for unknown
+        color = (0, 255, 100) if name else (0, 220, 255)
+        cv2.putText(frame, label, (lx, ly), font, scale, color, thickness)
 
     return frame
 
