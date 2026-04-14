@@ -23,7 +23,8 @@ Scene data:
 Rules:
 - One sentence only. No lists. No extra commentary.
 - Be specific about numbers of people and their activity.
-- Example: "Two people are present indoors, one moving quickly while the other remains stationary."
+- If 'identities' are listed, use their specific names instead of saying "a person".
+- Example: "Mit and one unknown person are present indoors, one moving quickly while the other remains stationary."
 
 Your one-sentence summary:"""
 
