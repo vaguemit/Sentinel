@@ -423,13 +423,13 @@ def draw_scene_overlay(frame, scene, summary, is_night_vision=False):
     return frame
 
 
-# ─── MAIN LOOP ─────────────────────────────────────────────────────
+# ─── MAIN LOOP (MULTI-THREADED PIPELINE) ───────────────────────────
 
 def main():
     print("=" * 60)
     print(" AI SENTINEL LITE")
     print(" Tracking | Skeletons | Radar | Identity | Memory | Heatmap")
-    print(" Zones | Auto-Capture")
+    print(" Zones | Auto-Capture | Analytics | Threaded Pipeline")
     print("=" * 60)
 
     # Init all engines
@@ -473,6 +473,7 @@ def main():
     cached_face_names = {}      # obj_id -> name
     cached_actions = {}         # obj_id -> [action_strings]
     cached_landmarks = None     # for skeleton drawing
+    face_skeleton_lock = threading.Lock()
 
     # Heatmap
     heatmap = DensityHeatmap(width=1280, height=720)
@@ -498,6 +499,45 @@ def main():
             zone_start = None
             print("Zone defined! Press Z to add another.")
 
+    # Background face + skeleton worker
+    from collections import deque
+    face_skel_queue = deque(maxlen=1)
+    worker_running = True
+
+    def face_skeleton_worker():
+        nonlocal cached_face_names, cached_actions, cached_landmarks, worker_running
+        local_count = 0
+        while worker_running:
+            if not face_skel_queue:
+                time.sleep(0.01)
+                continue
+            work = face_skel_queue.pop()
+            frame = work['frame']
+            tracked = work['tracked']
+            local_count += 1
+            # Face recognition (every 5th worker cycle)
+            if local_count % 5 == 0 and tracked:
+                new_names = {}
+                for obj_id, obj in tracked.items():
+                    x1, y1, x2, y2 = obj.bbox
+                    x1, y1 = max(0, x1), max(0, y1)
+                    crop = frame[y1:y2, x1:x2]
+                    if crop.size > 0 and crop.shape[0] > 50:
+                        name = face_recognizer.identify(crop)
+                        if name and name != "Unknown":
+                            new_names[obj_id] = name
+                with face_skeleton_lock:
+                    cached_face_names.update(new_names)
+            # Skeleton (every 2nd worker cycle)
+            if local_count % 2 == 0 and tracked:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                landmarks, actions = action_engine.analyze(frame_rgb)
+                with face_skeleton_lock:
+                    cached_landmarks = landmarks
+                    if actions and tracked:
+                        first_id = next(iter(tracked))
+                        cached_actions[first_id] = actions
+
     cv2.namedWindow("AI Sentinel Lite")
     cv2.setMouseCallback("AI Sentinel Lite", mouse_callback)
 
@@ -508,6 +548,11 @@ def main():
         current_summary = result
         db.save_event(result)
         generating = False
+
+    # Start background worker
+    t_worker = threading.Thread(target=face_skeleton_worker, daemon=True)
+    t_worker.start()
+    print("[PIPELINE] Background face/skeleton worker started.")
 
     while True:
         ret, frame = cap.read()
@@ -552,39 +597,22 @@ def main():
 
         tracked = tracker.update(person_detections)
 
-        # ── FACE RECOGNITION (every 10th frame, only if people exist) ──
-        if frame_count % 10 == 0 and tracked:
-            new_names = {}
-            for obj_id, obj in tracked.items():
-                x1, y1, x2, y2 = obj.bbox
-                x1, y1 = max(0, x1), max(0, y1)
-                crop = frame[y1:y2, x1:x2]
-                if crop.size > 0 and crop.shape[0] > 50:
-                    name = face_recognizer.identify(crop)
-                    if name and name != "Unknown":
-                        new_names[obj_id] = name
-            cached_face_names.update(new_names)
+        # ── OFFLOAD TO BACKGROUND WORKER ──
+        if tracked:
+            face_skel_queue.append({'frame': frame.copy(), 'tracked': dict(tracked)})
 
-        # ── SKELETAL ACTION RECOGNITION (every 3rd frame, only if people) ──
-        if frame_count % 3 == 0 and tracked:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            landmarks, actions = action_engine.analyze(frame_rgb)
-            cached_landmarks = landmarks
-
-            if actions:
-                # Assign actions to the closest tracked person
-                # For simplicity, assign to the first tracked person
-                first_id = next(iter(tracked))
-                cached_actions[first_id] = actions
-        else:
-            landmarks = cached_landmarks
+        # ── READ CACHED RESULTS (thread-safe) ──
+        with face_skeleton_lock:
+            local_landmarks = cached_landmarks
+            local_face_names = dict(cached_face_names)
+            local_actions = dict(cached_actions)
 
         # ── DRAW SKELETON ──
-        if cached_landmarks:
-            annotated_frame = action_engine.draw_skeleton(annotated_frame, cached_landmarks)
+        if local_landmarks:
+            annotated_frame = action_engine.draw_skeleton(annotated_frame, local_landmarks)
 
         # ── DRAW TRACKER LABELS ──
-        annotated_frame = draw_tracker_labels(annotated_frame, tracked, cached_face_names, cached_actions)
+        annotated_frame = draw_tracker_labels(annotated_frame, tracked, local_face_names, local_actions)
 
         # ── DRAW RADAR ──
         annotated_frame = draw_radar(annotated_frame, tracked)
@@ -601,9 +629,9 @@ def main():
         # ── BUILD SCENE ──
         scene = scene_builder.build(raw_result, detector.model.names)
         scene['targets'] = len(tracked)
-        scene['identities'] = list(set(cached_face_names.values()))
+        scene['identities'] = list(set(local_face_names.values()))
         all_actions = set()
-        for a_list in cached_actions.values():
+        for a_list in local_actions.values():
             all_actions.update(a_list)
         scene['actions'] = list(all_actions)
         if zone_intrusions:
@@ -611,7 +639,7 @@ def main():
 
         # ── AUTO SCREENSHOT ──
         captured = anomaly_capture.check_and_capture(
-            annotated_frame, tracked, cached_face_names, cached_actions, zone_intrusions
+            annotated_frame, tracked, local_face_names, local_actions, zone_intrusions
         )
         if captured:
             analytics.log_event()
@@ -644,6 +672,7 @@ def main():
             drawing_zone = True
             print("Click and drag on the video to define a restricted zone...")
 
+    worker_running = False
     cap.release()
     cv2.destroyAllWindows()
 
