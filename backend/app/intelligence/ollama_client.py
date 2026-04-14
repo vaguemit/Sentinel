@@ -70,3 +70,29 @@ class OllamaClient:
                 return result.get("response", "").strip()
         except Exception as e:
             return f"LLM error: {e}"
+
+    def ask(self, prompt: str) -> str:
+        """
+        Send a generic prompt to Ollama. Used for RAG/Chat.
+        """
+        if not self.is_running():
+            return "Ollama is not reachable."
+
+        payload = json.dumps({
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                self.url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                return result.get("response", "").strip()
+        except Exception as e:
+            return f"LLM error: {e}"

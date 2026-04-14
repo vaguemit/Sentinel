@@ -5,3 +5,5 @@ pydantic-settings
 opencv-python
 ultralytics
 requests
+chromadb
+sentence-transformers

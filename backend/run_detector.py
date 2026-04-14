@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from app.vision.detector import YoloDetector
 from app.intelligence.scene_builder import SceneBuilder
 from app.intelligence.ollama_client import OllamaClient
+from app.memory.db_client import MemoryDB
 
 
 def draw_scene_overlay(frame, scene, summary):
@@ -72,6 +73,7 @@ def main():
     detector = YoloDetector("yolov8s.pt")
     scene_builder = SceneBuilder(movement_threshold=15)
     ollama = OllamaClient()
+    db = MemoryDB(persist_directory="chroma_db")
 
     if not ollama.is_running():
         print("[WARNING] Ollama is not running. Start it with: ollama serve")
@@ -100,6 +102,7 @@ def main():
         current_summary = "Thinking..."
         result = ollama.summarize(scene)
         current_summary = result
+        db.save_event(result)
         generating = False
 
     while True:
