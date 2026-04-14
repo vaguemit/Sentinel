@@ -40,4 +40,4 @@ class YoloDetector:
                 class_name = self.model.names[class_id]
                 detections_count[class_name] = detections_count.get(class_name, 0) + 1
                 
-        return annotated_frame, detections_count
+        return annotated_frame, detections_count, result
