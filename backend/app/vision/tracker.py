@@ -6,6 +6,7 @@ Euclidean distance matching. Lightweight, no GPU needed.
 """
 
 import math
+import time
 
 
 class TrackedObject:
@@ -16,6 +17,12 @@ class TrackedObject:
         self.frames_missing = 0
         self.trail = [centroid]       # History of positions for radar
         self.speed = 0.0              # Pixels per frame
+        self.first_seen = time.time() # Dwell time tracking
+
+    @property
+    def dwell_time(self):
+        """Seconds since this target was first tracked."""
+        return time.time() - self.first_seen
 
     def update(self, centroid, bbox):
         if self.trail:

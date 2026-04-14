@@ -363,6 +363,13 @@ def draw_tracker_labels(frame, tracked_objects, face_names, actions_map):
         if action_list:
             parts.append(action_list[0])  # Only show primary action
 
+        # Dwell time
+        dwell = int(obj.dwell_time)
+        if dwell >= 120:
+            parts.append(f"LOITERING {dwell}s")
+        elif dwell >= 5:
+            parts.append(f"{dwell}s")
+
         label = " | ".join(parts)
 
         # Calculate label size for background pill
@@ -378,8 +385,14 @@ def draw_tracker_labels(frame, tracked_objects, face_names, actions_map):
         # Dark background pill
         cv2.rectangle(frame, (lx - 2, ly - th - 4), (lx + tw + 4, ly + 2), (20, 20, 20), -1)
 
-        # Text color: green for known, yellow for unknown
-        color = (0, 255, 100) if name else (0, 220, 255)
+        # Text color: red for loitering, green for known, yellow for unknown
+        dwell = int(obj.dwell_time)
+        if dwell >= 120:
+            color = (0, 0, 255)  # Red for loitering
+        elif name:
+            color = (0, 255, 100)
+        else:
+            color = (0, 220, 255)
         cv2.putText(frame, label, (lx, ly), font, scale, color, thickness)
 
     return frame
@@ -620,6 +633,15 @@ def main():
         for a_list in local_actions.values():
             all_actions.update(a_list)
         scene['actions'] = list(all_actions)
+        # Dwell time info
+        dwell_info = {}
+        for obj_id, obj in tracked.items():
+            name = local_face_names.get(obj_id, f"Target {obj_id}")
+            dwell_info[name] = int(obj.dwell_time)
+        scene['dwell_times'] = dwell_info
+        loiterers = [n for n, d in dwell_info.items() if d >= 120]
+        if loiterers:
+            scene['loitering'] = loiterers
         if zone_intrusions:
             scene['zone_alert'] = True
 
