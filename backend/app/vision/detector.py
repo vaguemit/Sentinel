@@ -6,15 +6,20 @@ from ultralytics import YOLO
 warnings.filterwarnings("ignore")
 
 class YoloDetector:
-    def __init__(self, model_path="yolov8n.pt"):
+    def __init__(self, model_path="yolov8s.pt", conf=0.4):
         """
-        Initialize the YOLOv8n model.
-        YOLOv8 nano is extremely lightweight and will easily fit in 4GB VRAM.
-        When initialized, it will auto-download 'yolov8n.pt' if not present.
+        Initialize the YOLOv8s model on GPU.
+        yolov8s (small) is significantly more accurate than nano
+        and runs comfortably on a 3050 Ti at 30+ FPS.
+        conf: confidence threshold (0.0-1.0). Lower = more detections, Higher = fewer false positives.
         """
-        print("Loading YOLOv8n model...")
+        self.conf = conf
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Loading YOLOv8s model on {device.upper()}...")
         self.model = YOLO(model_path)
-        print("Model loaded successfully.")
+        self.model.to(device)
+        print(f"Model loaded successfully on {device.upper()}.")
 
     def process_frame(self, frame):
         """
@@ -23,7 +28,7 @@ class YoloDetector:
         """
         # Perform inference
         # verbose=False prevents YOLO from printing stats to console on every frame
-        results = self.model(frame, verbose=False)
+        results = self.model(frame, verbose=False, conf=self.conf)
         
         # The results list contains output for the single batch image
         result = results[0]
