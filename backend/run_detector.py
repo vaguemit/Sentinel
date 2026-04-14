@@ -9,6 +9,8 @@ AI Sentinel Lite - Full Stack Surveillance Engine
 - ChromaDB RAG memory
 - Auto night vision (IR camera switching)
 - Real-time density heatmap (toggle with H)
+- Virtual restricted zones with intrusion alerts
+- Auto-screenshot on anomaly detection
 
 OPTIMIZATION STRATEGY (4GB VRAM / CPU-only):
   - YOLO runs every frame (lightweight on CPU)
@@ -17,7 +19,7 @@ OPTIMIZATION STRATEGY (4GB VRAM / CPU-only):
   - LLM runs every 5 seconds in a background thread
   - Radar + overlays + heatmap are pure OpenCV drawing (zero cost)
 
-Press 'Q' to quit. Press 'H' to toggle heatmap.
+Press 'Q' to quit. Press 'H' to toggle heatmap. Press 'Z' to define a zone.
 """
 
 import cv2
@@ -85,6 +87,112 @@ class DensityHeatmap:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1)
 
         return blended
+
+
+# ─── ZONE ENGINE ───────────────────────────────────────────────────
+
+class ZoneManager:
+    """Manages virtual restricted zones drawn by the user."""
+    def __init__(self):
+        self.zones = []        # List of (x1, y1, x2, y2) tuples
+        self.intrusions = {}   # zone_idx -> list of target IDs
+        self.alert_flash = 0   # Countdown frames for red flash
+
+    def add_zone(self, x1, y1, x2, y2):
+        self.zones.append((min(x1,x2), min(y1,y2), max(x1,x2), max(y1,y2)))
+        print(f"Zone {len(self.zones)} added: ({x1},{y1}) to ({x2},{y2})")
+
+    def check_intrusions(self, tracked_objects, face_names):
+        """Check if any tracked object is inside a restricted zone."""
+        self.intrusions = {}
+        for zone_idx, (zx1, zy1, zx2, zy2) in enumerate(self.zones):
+            for obj_id, obj in tracked_objects.items():
+                cx, cy = obj.centroid
+                if zx1 <= cx <= zx2 and zy1 <= cy <= zy2:
+                    if zone_idx not in self.intrusions:
+                        self.intrusions[zone_idx] = []
+                    name = face_names.get(obj_id, f"Target {obj_id}")
+                    self.intrusions[zone_idx].append(name)
+                    self.alert_flash = 15  # Flash for 15 frames
+
+        return self.intrusions
+
+    def draw_zones(self, frame):
+        """Draw zone boundaries and flash red on intrusion."""
+        for zone_idx, (zx1, zy1, zx2, zy2) in enumerate(self.zones):
+            if zone_idx in self.intrusions:
+                # INTRUSION: Red zone with flashing
+                color = (0, 0, 255)
+                thickness = 3
+                cv2.putText(frame, f"!! INTRUSION Zone {zone_idx+1} !!",
+                            (zx1, max(zy1 - 10, 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            else:
+                # Normal: Green dashed boundary
+                color = (0, 200, 0)
+                thickness = 1
+                cv2.putText(frame, f"Zone {zone_idx+1}",
+                            (zx1, max(zy1 - 10, 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+
+            cv2.rectangle(frame, (zx1, zy1), (zx2, zy2), color, thickness)
+
+        # Red border flash on any intrusion
+        if self.alert_flash > 0:
+            h, w = frame.shape[:2]
+            cv2.rectangle(frame, (0, 0), (w-1, h-1), (0, 0, 255), 4)
+            self.alert_flash -= 1
+
+        return frame
+
+
+# ─── AUTO-SCREENSHOT ENGINE ────────────────────────────────────────
+
+class AnomalyCapture:
+    """Automatically saves screenshots when anomalies are detected."""
+    def __init__(self, capture_dir="captures"):
+        self.capture_dir = capture_dir
+        os.makedirs(capture_dir, exist_ok=True)
+        self.last_capture_time = 0
+        self.cooldown = 10  # seconds between captures
+
+    def check_and_capture(self, frame, tracked, face_names, actions_map, zone_intrusions):
+        """Check for anomaly conditions and save screenshot if triggered."""
+        now = time.time()
+        if now - self.last_capture_time < self.cooldown:
+            return None
+
+        reason = None
+
+        # Anomaly 1: Unknown person detected
+        for obj_id in tracked:
+            if obj_id not in face_names:
+                reason = f"Unknown_person_Target{obj_id}"
+                break
+
+        # Anomaly 2: Someone running fast
+        for obj_id, obj in tracked.items():
+            if obj.speed > 30:
+                name = face_names.get(obj_id, f"Target{obj_id}")
+                reason = f"Fast_movement_{name}"
+                break
+
+        # Anomaly 3: Zone intrusion
+        if zone_intrusions:
+            for zone_idx, intruders in zone_intrusions.items():
+                reason = f"Zone{zone_idx+1}_intrusion_{'_'.join(intruders)}"
+                break
+
+        if reason:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"{timestamp}_{reason}.jpg"
+            filepath = os.path.join(self.capture_dir, filename)
+            cv2.imwrite(filepath, frame)
+            self.last_capture_time = now
+            print(f"[CAPTURE] Anomaly screenshot saved: {filepath}")
+            return filepath
+
+        return None
 
 
 # ─── DRAWING HELPERS ───────────────────────────────────────────────
@@ -229,6 +337,7 @@ def main():
     print("=" * 60)
     print(" AI SENTINEL LITE")
     print(" Tracking | Skeletons | Radar | Identity | Memory | Heatmap")
+    print(" Zones | Auto-Capture")
     print("=" * 60)
 
     # Init all engines
@@ -276,6 +385,26 @@ def main():
     # Heatmap
     heatmap = DensityHeatmap(width=1280, height=720)
     show_heatmap = False
+
+    # Zones & Screenshots
+    zone_mgr = ZoneManager()
+    anomaly_capture = AnomalyCapture()
+    drawing_zone = False
+    zone_start = None
+
+    # Mouse callback for zone drawing
+    def mouse_callback(event, x, y, flags, param):
+        nonlocal drawing_zone, zone_start
+        if event == cv2.EVENT_LBUTTONDOWN and drawing_zone:
+            zone_start = (x, y)
+        elif event == cv2.EVENT_LBUTTONUP and drawing_zone and zone_start:
+            zone_mgr.add_zone(zone_start[0], zone_start[1], x, y)
+            drawing_zone = False
+            zone_start = None
+            print("Zone defined! Press Z to add another.")
+
+    cv2.namedWindow("AI Sentinel Lite")
+    cv2.setMouseCallback("AI Sentinel Lite", mouse_callback)
 
     def generate_summary_async(scene):
         nonlocal current_summary, generating
@@ -370,6 +499,10 @@ def main():
         if show_heatmap:
             annotated_frame = heatmap.render(annotated_frame)
 
+        # ── ZONES ──
+        zone_intrusions = zone_mgr.check_intrusions(tracked, cached_face_names)
+        annotated_frame = zone_mgr.draw_zones(annotated_frame)
+
         # ── BUILD SCENE ──
         scene = scene_builder.build(raw_result, detector.model.names)
         scene['targets'] = len(tracked)
@@ -378,6 +511,13 @@ def main():
         for a_list in cached_actions.values():
             all_actions.update(a_list)
         scene['actions'] = list(all_actions)
+        if zone_intrusions:
+            scene['zone_alert'] = True
+
+        # ── AUTO SCREENSHOT ──
+        anomaly_capture.check_and_capture(
+            annotated_frame, tracked, cached_face_names, cached_actions, zone_intrusions
+        )
 
         # ── LLM SUMMARY (every N seconds, non-blocking) ──
         if not generating and (now - last_summary_time) >= SUMMARY_INTERVAL:
@@ -403,6 +543,9 @@ def main():
         elif key == ord('h'):
             show_heatmap = not show_heatmap
             print(f"Heatmap: {'ON' if show_heatmap else 'OFF'}")
+        elif key == ord('z'):
+            drawing_zone = True
+            print("Click and drag on the video to define a restricted zone...")
 
     cap.release()
     cv2.destroyAllWindows()
