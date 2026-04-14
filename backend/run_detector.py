@@ -22,7 +22,8 @@ def main():
     print("Starting AI Sentinel Lite...")
     detector = YoloDetector("yolov8n.pt")
 
-    VIDEO_SOURCE = 0
+    # Camera 0 = IR camera (Windows Hello), Camera 1 = real RGB webcam
+    VIDEO_SOURCE = 1
 
     # Try default backend (CAP_DSHOW is incompatible with index-based capture on this system)
     cap = cv2.VideoCapture(VIDEO_SOURCE)
