@@ -22,8 +22,15 @@ def main():
     print("Starting AI Sentinel Lite...")
     detector = YoloDetector("yolov8n.pt")
 
-    # Open webcam using DirectShow backend (avoids MSMF errors on Windows)
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    VIDEO_SOURCE = 0
+
+    # Try default backend (CAP_DSHOW is incompatible with index-based capture on this system)
+    cap = cv2.VideoCapture(VIDEO_SOURCE)
+
+    # If index 0 fails, try index 1 (for laptops with dual cameras)
+    if not cap.isOpened() and isinstance(VIDEO_SOURCE, int):
+        print(f"Index {VIDEO_SOURCE} failed, trying index 1...")
+        cap = cv2.VideoCapture(1)
 
     if not cap.isOpened():
         print("ERROR: Could not open webcam. Make sure it's connected and not in use by another app.")
