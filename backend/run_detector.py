@@ -1,5 +1,5 @@
 """
-AI Sentinel Lite - Phase 6: Full Stack Surveillance Engine
+AI Sentinel Lite - Full Stack Surveillance Engine
 ------------------------------------------------------------
 - YOLOv8s object detection
 - Centroid multi-object tracking with persistent IDs + radar
@@ -8,15 +8,16 @@ AI Sentinel Lite - Phase 6: Full Stack Surveillance Engine
 - Qwen 2.5 LLM scene summarization via Ollama
 - ChromaDB RAG memory
 - Auto night vision (IR camera switching)
+- Real-time density heatmap (toggle with H)
 
 OPTIMIZATION STRATEGY (4GB VRAM / CPU-only):
   - YOLO runs every frame (lightweight on CPU)
   - Face recognition runs every 10th frame (expensive ONNX)
   - MediaPipe runs every 3rd frame (medium cost)
   - LLM runs every 5 seconds in a background thread
-  - Radar + overlays are pure OpenCV drawing (zero cost)
+  - Radar + overlays + heatmap are pure OpenCV drawing (zero cost)
 
-Press 'Q' to quit.
+Press 'Q' to quit. Press 'H' to toggle heatmap.
 """
 
 import cv2
@@ -36,6 +37,54 @@ from app.vision.face_recognizer import SentinelFaceRecognizer
 from app.intelligence.scene_builder import SceneBuilder
 from app.intelligence.ollama_client import OllamaClient
 from app.memory.db_client import MemoryDB
+
+
+# ─── HEATMAP ENGINE ────────────────────────────────────────────────
+
+class DensityHeatmap:
+    """Accumulates person positions over time into a thermal heatmap."""
+    def __init__(self, width=1280, height=720, decay=0.995):
+        self.accumulator = np.zeros((height, width), dtype=np.float32)
+        self.decay = decay  # Slow decay so old positions fade gradually
+
+    def update(self, tracked_objects):
+        """Add current positions to the accumulator."""
+        # Decay old values slightly each frame
+        self.accumulator *= self.decay
+
+        for obj_id, obj in tracked_objects.items():
+            cx, cy = int(obj.centroid[0]), int(obj.centroid[1])
+            h, w = self.accumulator.shape
+            if 0 <= cx < w and 0 <= cy < h:
+                # Gaussian-like splat (fast approximation with cv2.circle)
+                cv2.circle(self.accumulator, (cx, cy), 40, 1.0, -1)
+
+    def render(self, frame):
+        """Render the heatmap as a translucent overlay on the frame."""
+        h, w = frame.shape[:2]
+        acc = self.accumulator[:h, :w]
+
+        # Normalize to 0-255
+        max_val = acc.max()
+        if max_val < 1:
+            return frame
+
+        normalized = (acc / max_val * 255).astype(np.uint8)
+        # Apply colormap: COLORMAP_JET gives blue(cold) -> red(hot)
+        colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+
+        # Only overlay where there's actual heat (avoid blue wash everywhere)
+        mask = normalized > 10
+        mask_3ch = np.stack([mask, mask, mask], axis=-1)
+
+        blended = frame.copy()
+        blended[mask_3ch] = cv2.addWeighted(frame, 0.5, colored, 0.5, 0)[mask_3ch]
+
+        # Label
+        cv2.putText(blended, "[ HEATMAP ON ]", (w - 180, 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1)
+
+        return blended
 
 
 # ─── DRAWING HELPERS ───────────────────────────────────────────────
@@ -177,10 +226,10 @@ def draw_scene_overlay(frame, scene, summary, is_night_vision=False):
 # ─── MAIN LOOP ─────────────────────────────────────────────────────
 
 def main():
-    print("=" * 55)
-    print(" AI SENTINEL LITE - Phase 6")
-    print(" Tracking | Skeletons | Radar | Identity | Memory")
-    print("=" * 55)
+    print("=" * 60)
+    print(" AI SENTINEL LITE")
+    print(" Tracking | Skeletons | Radar | Identity | Memory | Heatmap")
+    print("=" * 60)
 
     # Init all engines
     detector = YoloDetector("yolov8s.pt")
@@ -209,7 +258,7 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    print("Webcam opened. Press 'Q' to quit.\n")
+    print("Webcam opened. Press 'Q' to quit. Press 'H' to toggle heatmap.\n")
 
     # State
     current_summary = "Initializing AI..."
@@ -223,6 +272,10 @@ def main():
     cached_face_names = {}      # obj_id -> name
     cached_actions = {}         # obj_id -> [action_strings]
     cached_landmarks = None     # for skeleton drawing
+
+    # Heatmap
+    heatmap = DensityHeatmap(width=1280, height=720)
+    show_heatmap = False
 
     def generate_summary_async(scene):
         nonlocal current_summary, generating
@@ -312,6 +365,11 @@ def main():
         # ── DRAW RADAR ──
         annotated_frame = draw_radar(annotated_frame, tracked)
 
+        # ── HEATMAP ──
+        heatmap.update(tracked)
+        if show_heatmap:
+            annotated_frame = heatmap.render(annotated_frame)
+
         # ── BUILD SCENE ──
         scene = scene_builder.build(raw_result, detector.model.names)
         scene['targets'] = len(tracked)
@@ -338,9 +396,13 @@ def main():
 
         cv2.imshow("AI Sentinel Lite", annotated_frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             print("\nShutting down Sentinel...")
             break
+        elif key == ord('h'):
+            show_heatmap = not show_heatmap
+            print(f"Heatmap: {'ON' if show_heatmap else 'OFF'}")
 
     cap.release()
     cv2.destroyAllWindows()
