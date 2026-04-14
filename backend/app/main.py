@@ -12,14 +12,16 @@ app = FastAPI(title="AI Sentinel Lite", version="1.0")
 detector = YoloDetector("yolov8n.pt")
 
 # Determine video source
-# Fallback to local webcam (0) if sample.mp4 doesn't exist
-VIDEO_SOURCE = "sample.mp4"
-if not os.path.exists(VIDEO_SOURCE):
-    print(f"[{VIDEO_SOURCE}] not found. Falling back to webcam (0).")
-    VIDEO_SOURCE = 0
+# Changing to use the webcam (0) by default per user request.
+# Note: Using cv2.CAP_DSHOW helps avoid Windows MSMF errors on some webcams.
+VIDEO_SOURCE = 0
 
 def generate_frames():
-    cap = cv2.VideoCapture(VIDEO_SOURCE)
+    # Use cv2.CAP_DSHOW for webcam on Windows to avoid MSMF hanging/errors
+    if isinstance(VIDEO_SOURCE, int):
+        cap = cv2.VideoCapture(VIDEO_SOURCE, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(VIDEO_SOURCE)
     
     if not cap.isOpened():
         print("Error: Could not open video source.")
