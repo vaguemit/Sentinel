@@ -40,6 +40,7 @@ from app.vision.face_recognizer import SentinelFaceRecognizer
 from app.intelligence.scene_builder import SceneBuilder
 from app.intelligence.ollama_client import OllamaClient
 from app.memory.db_client import MemoryDB
+from app.alerts.telegram_alert import TelegramAlerter
 
 
 # ─── HEATMAP ENGINE ────────────────────────────────────────────────
@@ -464,6 +465,7 @@ def main():
     scene_builder = SceneBuilder(movement_threshold=15)
     ollama = OllamaClient()
     db = MemoryDB(persist_directory="chroma_db")
+    telegram = TelegramAlerter()
 
     if not ollama.is_running():
         print("[WARNING] Ollama not running. AI summaries disabled.")
@@ -645,12 +647,24 @@ def main():
         if zone_intrusions:
             scene['zone_alert'] = True
 
-        # ── AUTO SCREENSHOT ──
+        # ── AUTO SCREENSHOT + TELEGRAM ALERTS ──
         captured = anomaly_capture.check_and_capture(
             annotated_frame, tracked, local_face_names, local_actions, zone_intrusions
         )
         if captured:
             analytics.log_event()
+            # Determine alert reason from filename
+            reason = os.path.basename(captured).replace('.jpg', '').replace('_', ' ')
+            telegram.alert(reason, photo_path=captured)
+
+        # Telegram: Zone intrusion alert
+        if zone_intrusions:
+            for zone_idx, intruders in zone_intrusions.items():
+                telegram.alert(f"Zone {zone_idx+1} intrusion by {', '.join(intruders)}")
+
+        # Telegram: Loitering alert
+        if loiterers:
+            telegram.alert(f"Loitering detected: {', '.join(loiterers)}")
 
         # ── ANALYTICS ──
         analytics.update(len(tracked))
