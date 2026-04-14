@@ -11,6 +11,7 @@ AI Sentinel Lite - Full Stack Surveillance Engine
 - Real-time density heatmap (toggle with H)
 - Virtual restricted zones with intrusion alerts
 - Auto-screenshot on anomaly detection
+- Live analytics graph (people count, FPS, events)
 
 OPTIMIZATION STRATEGY (4GB VRAM / CPU-only):
   - YOLO runs every frame (lightweight on CPU)
@@ -193,6 +194,97 @@ class AnomalyCapture:
             return filepath
 
         return None
+
+
+# ─── LIVE ANALYTICS ENGINE ─────────────────────────────────────────
+
+class LiveAnalytics:
+    """Tracks and renders real-time analytics: people count history, FPS, events."""
+    def __init__(self, history_seconds=60):
+        self.people_history = []     # (timestamp, count) tuples
+        self.event_count = 0
+        self.history_seconds = history_seconds
+        self.fps_samples = []
+        self.last_frame_time = time.time()
+
+    def update(self, people_count):
+        now = time.time()
+        # FPS
+        dt = now - self.last_frame_time
+        self.last_frame_time = now
+        if dt > 0:
+            self.fps_samples.append(1.0 / dt)
+        if len(self.fps_samples) > 30:
+            self.fps_samples.pop(0)
+
+        # People count history
+        self.people_history.append((now, people_count))
+        # Prune old entries
+        cutoff = now - self.history_seconds
+        self.people_history = [(t, c) for t, c in self.people_history if t >= cutoff]
+
+    def log_event(self):
+        self.event_count += 1
+
+    def get_fps(self):
+        if not self.fps_samples:
+            return 0
+        return sum(self.fps_samples) / len(self.fps_samples)
+
+    def draw(self, frame):
+        """Draw a mini analytics panel in the top-right corner."""
+        h, w = frame.shape[:2]
+        graph_w, graph_h = 220, 100
+        margin = 10
+        gx = w - graph_w - margin
+        gy = 50  # Below the AI summary bar
+
+        # Semi-transparent dark background
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (gx - 5, gy - 20), (gx + graph_w + 5, gy + graph_h + 35),
+                      (15, 15, 15), -1)
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+        # Title
+        fps = self.get_fps()
+        cv2.putText(frame, f"ANALYTICS  FPS: {fps:.0f}", (gx, gy - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
+
+        # Draw people count graph
+        if len(self.people_history) > 1:
+            max_count = max(c for _, c in self.people_history)
+            if max_count == 0:
+                max_count = 1
+
+            points = []
+            now = time.time()
+            for t, c in self.people_history:
+                px = int(gx + ((t - (now - self.history_seconds)) / self.history_seconds) * graph_w)
+                py = int(gy + graph_h - (c / max_count) * graph_h)
+                points.append((px, py))
+
+            # Draw the line
+            for i in range(1, len(points)):
+                cv2.line(frame, points[i - 1], points[i], (0, 200, 255), 1)
+
+            # Fill area under the line
+            fill_pts = points + [(points[-1][0], gy + graph_h), (points[0][0], gy + graph_h)]
+            fill_overlay = frame.copy()
+            cv2.fillPoly(fill_overlay, [np.array(fill_pts)], (0, 80, 120))
+            cv2.addWeighted(fill_overlay, 0.3, frame, 0.7, 0, frame)
+
+        # Axis labels
+        cv2.putText(frame, "People", (gx, gy + graph_h + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+        cv2.putText(frame, f"Events: {self.event_count}", (gx + 100, gy + graph_h + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+        cv2.putText(frame, f"60s", (gx + graph_w - 20, gy + graph_h + 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (100, 100, 100), 1)
+
+        # Graph border
+        cv2.rectangle(frame, (gx, gy), (gx + graph_w, gy + graph_h), (50, 50, 50), 1)
+
+        return frame
 
 
 # ─── DRAWING HELPERS ───────────────────────────────────────────────
@@ -392,6 +484,9 @@ def main():
     drawing_zone = False
     zone_start = None
 
+    # Analytics
+    analytics = LiveAnalytics(history_seconds=60)
+
     # Mouse callback for zone drawing
     def mouse_callback(event, x, y, flags, param):
         nonlocal drawing_zone, zone_start
@@ -515,9 +610,15 @@ def main():
             scene['zone_alert'] = True
 
         # ── AUTO SCREENSHOT ──
-        anomaly_capture.check_and_capture(
+        captured = anomaly_capture.check_and_capture(
             annotated_frame, tracked, cached_face_names, cached_actions, zone_intrusions
         )
+        if captured:
+            analytics.log_event()
+
+        # ── ANALYTICS ──
+        analytics.update(len(tracked))
+        annotated_frame = analytics.draw(annotated_frame)
 
         # ── LLM SUMMARY (every N seconds, non-blocking) ──
         if not generating and (now - last_summary_time) >= SUMMARY_INTERVAL:
@@ -529,10 +630,6 @@ def main():
         # ── FINAL COMPOSITE ──
         is_night = (current_camera == CAMERA_IR)
         annotated_frame = draw_scene_overlay(annotated_frame, scene, current_summary, is_night)
-
-        # FPS counter
-        cv2.putText(annotated_frame, f"Frame: {frame_count}", (10, annotated_frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
 
         cv2.imshow("AI Sentinel Lite", annotated_frame)
 
